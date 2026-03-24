@@ -1,15 +1,186 @@
-//including necessary libraries
+// including necessary libraries
 #include <stdbool.h>
 #include <stdlib.h>
 
 const short int BLACK = 0x0000;
 const short int YELLOW = 0xFF20;
 const short int BLUE = 0x20FF;
+#define FPGA_CHAR_BASE 0x09000000;
 
-//global variable, used in multiple functiosn
-int pixel_buffer_start; 
+#define clock_rate 100000000
+#define quarter_clock clock_rate / 4
 
-//declaring draw line and clear screen
+#define KEY_BASE 0xff200050
+#define TIMER_BASE 0xff202000
+#define MTIME_BASE 0xff202100
+#define LEDR_BASE 0xff200000
+#define HEX3_HEX0_BASE 0xff200020
+
+static void handler(void) __attribute__((interrupt("machine")));
+void set_mtimer(void);
+void set_itimer(void);
+void set_KEY(void);
+void SWI_ISR(void);
+void itimer_ISR(void);
+void KEY_ISR(void);
+
+volatile int counter = 0;
+volatile int digit = 0;
+volatile int KEY_dir = 1;
+
+int voltage_div_values[] = {0, 0, 0};
+
+int voltage_div_array = 0;
+
+char bit_codes[] = {0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x67};
+
+void handler(void) {
+  int mcause_value;
+  __asm__ volatile("csrr %0, mcause" : "=r"(mcause_value));
+
+  if (mcause_value == 0x80000003)
+    SWI_ISR();
+  else if (mcause_value == 0x80000007)
+    mtimer_ISR();
+  else if (mcause_value == 0x80000010)
+    itimer_ISR();
+  else if (mcause_value == 0x80000012)
+    KEY_ISR();
+}
+
+void SWI_ISR(void) {
+  volatile int* mtime_ptr = (int*)MTIME_BASE;
+  counter = 0b1111111100;
+  *(mtime_ptr + 4) = 0;
+}
+
+typedef long long int64;
+
+void mtimer_ISR(void) {
+  volatile unsigned int* mtime_ptr = (unsigned int*)MTIME_BASE;
+  int64 mtimecmp64;
+
+  mtimecmp64 = *(mtime_ptr + 3);
+  mtimecmp64 = (mtimecmp64 << 32) | *(mtime_ptr + 2);
+  mtimecmp64 = mtimecmp64 + (int64)quarter_clock;
+
+  *(mtime_ptr + 2) = (unsigned int)mtimecmp64;
+  *(mtime_ptr + 3) = (unsigned int)(mtimecmp64 >> 32);
+
+  counter = counter + 1;
+}
+
+void itimer_ISR(void) {
+  int new_digit;
+  volatile int* timer_ptr = (int*)TIMER_BASE;
+
+  *timer_ptr = 0;
+
+  if (new_digit < 10 && new_digit > -1) digit = new_digit;
+}
+
+void KEY_ISR(void) {
+  int pressed;
+  volatile int* KEY_ptr = (int*)KEY_BASE;
+
+  pressed = *(KEY_ptr + 3);
+
+  // if we pressed key 0
+  if (pressed == 0b0001) {
+    voltage_div_values[voltage_div_array] += 2;
+  } else if (pressed == 0b0010) {
+    voltage_div_values[voltage_div_array] -= 2;
+
+  } else if (pressed == 0b0100) {
+    voltage_div_array += 1;
+
+  } else if (pressed == 0b1000) {
+    voltage_div_array -= 1;
+  }
+
+  // clears the interrupt
+  *(KEY_ptr + 3) = pressed;
+}
+
+void set_mtimer(void) {
+  volatile int* mtime_ptr = (int*)MTIME_BASE;
+  unsigned int mtime_h, mtime_l, carry, mtimecmp_l;
+
+  do {
+    mtime_h = *(mtime_ptr + 1);
+    mtime_l = *(mtime_ptr);
+  } while (*(mtime_ptr + 1) != mtime_h);
+
+  mtimecmp_l = mtime_l + quarter_clock;
+  carry = mtimecmp_l < mtime_l ? 1 : 0;
+
+  *(mtime_ptr + 2) = mtimecmp_l;
+  *(mtime_ptr + 3) = mtime_h + carry;
+}
+
+void set_itimer(void) {
+  volatile int* timer_ptr = (int*)TIMER_BASE;
+
+  int load_val = clock_rate;
+
+  *(timer_ptr + 0x2) = (load_val & 0xFFFF);
+  *(timer_ptr + 0x3) = (load_val >> 16) & 0xFFFF;
+
+  *(timer_ptr + 1) = 0x7;
+}
+
+void set_KEY(void) {
+  volatile int* KEY_ptr = (int*)KEY_BASE;
+
+  *(KEY_ptr + 3) = 0xF;
+  *(KEY_ptr + 2) = 0xF;
+}
+
+// global variable, used in multiple functiosn
+int pixel_buffer_start;
+
+// declaring draw line and clear screen
+typedef struct {
+  double resistance;
+  int x_start_coor;
+  int x_end_coor;
+  int y_coor;
+} Resistor;
+
+typedef struct {
+  double capacitance;
+  int x_start_coor;
+  int x_end_coor;
+  int y_coor;
+} Capacitor;
+
+typedef struct {
+  double inductance;
+  int x_start_coor;
+  int x_end_coor;
+  int y_coor;
+} Inductor;
+
+typedef struct {
+  int x_center;
+  int y_center;
+  int radius;
+  double voltage_values;
+} Power;
+
+typedef struct {
+  int x_center;
+  int y_center;
+  int radius;
+  double current_values;
+} Current;
+
+typedef struct {
+  int x_start_coor;
+  int x_end_coor;
+  int y_coor;
+} Ground;
+
 void draw_line(int x0, int y0, int x1, int y1, short int color);
 void swapnumber(int* x, int* y);
 void plot_pixel(int x, int y, short int line_color);
@@ -21,253 +192,320 @@ void draw_half_circle(int xc, int yc, int r, short int line_colour);
 void draw_power(int x0, int y0, int r);
 void draw_current(int x0, int y0, int r);
 void draw_inductor(int x0, int x1, int y);
-
-void draw_one(int x0, int y0, int y1);
-void draw_two(int xc, int yc, int r);
 void clear_screen();
- 
-int main(void)
-{
-volatile int * pixel_ctrl_ptr = (int *)0xFF203020;
-/* Read location of the pixel buffer from the pixel buffer controller */
-pixel_buffer_start = *pixel_ctrl_ptr;
-	
-clear_screen();
-draw_cap(10, 60, 50);
-draw_res(100, 150, 150);
-draw_ground(200, 130, 200);
-draw_ground(50, 30, 30);
-draw_power(100, 150, 15);
-draw_current(200, 200, 15);
-draw_half_circle(100, 100, 20, BLUE);
-draw_inductor(50, 150, 160);
-draw_one(100, 50, 80);
-draw_two(150, 100, 20);
-	
+void voltage_divider_cct(Power* V, Resistor* R1, Resistor* R2, Ground* G) {
+  draw_power(V->x_center, V->y_center, V->radius);
+  draw_res(R1->x_start_coor, R1->x_end_coor, R1->y_coor);
+  draw_res(R2->x_start_coor, R2->x_end_coor, R2->y_coor);
+  draw_line(V->x_center, V->y_center - 2 * V->radius, R1->x_start_coor,
+            R1->y_coor, YELLOW);
+  draw_line(R1->x_start_coor + 7 * abs((R1->x_end_coor - R1->x_start_coor) / 3),
+            R1->y_coor,
+            R2->x_start_coor - abs((R2->x_end_coor - R2->x_start_coor) / 3),
+            R2->y_coor, YELLOW);
+  draw_ground(G->x_start_coor, G->x_end_coor, R2->y_coor);
+};
+void video_text(int x, int y, char* text_ptr) {
+  int offset;
+  volatile char* character_buffer = (char*)FPGA_CHAR_BASE;
 
+  // each row in the character buffer is 128 characters wide
+  offset = (y << 7) + x;  // same as y*128 + x
 
+  while (*text_ptr) {
+    *(character_buffer + offset) = *text_ptr;
+    ++text_ptr;
+    ++offset;
+  }
 }
 
-
-//plots the colour of a pixel at point (x, y)
-void plot_pixel(int x, int y, short int line_color)
-{
-volatile short int *one_pixel_address;
-one_pixel_address = pixel_buffer_start + (y << 10) + (x << 1);
-
-*one_pixel_address = line_color;
+void clear_text(char* buffer1, char* buffer2, char* buffer3) {
+  for (int i = 0; i < 50; i++) {
+    buffer1[i] = ' ';
+    buffer2[i] = ' ';
+    buffer3[i] = ' ';
+  }
 }
 
-//draws line from (x0, y0) to (x1, y1) with colour color
-void draw_line(int x0, int y0, int x1, int y1, short int color){
-	int y_step;
-	
-	bool is_steep=abs(y1-y0)>abs(x1-x0);
-	if(is_steep){
-		swapnumber(&x0, &y0);
-		swapnumber(&x1, &y1);
-	}
-	if(x0>x1){
-		swapnumber(&x0, &x1); 
-		swapnumber(&y0, &y1);
-	}
-	int deltax=x1-x0;
-	int deltay=abs(y1-y0); 
-	int error=-(deltax/2); 
-	int y=y0;
-	if(y0<y1){
-		y_step=1;
-	}
-	else{
-		y_step=-1;
-	}
-	
-	for(int x=x0;x<=x1;x++){
-		if(is_steep){
-			plot_pixel(y,x, color);
-		}
-		else{
-			plot_pixel(x,y,color);
-		}
-		error=error+deltay;
-		if(error>=0){
-			y=y+y_step;
-			error=error-deltax;
-		}
-	}
-}
+int main(void) {
+  // initializing pointers
+  volatile int* mtime_ptr = (int*)MTIME_BASE;
+  volatile int* LEDR_ptr = (int*)LEDR_BASE;
+  volatile int* HEX3_HEX0_ptr = (int*)HEX3_HEX0_BASE;
 
+  set_mtimer();
+  set_itimer();
+  set_KEY();
 
-//swaps two numbers for Bresenham’s algorithm
-void swapnumber(int* x, int* y){
-	int temp= *x; 
-	*x=*y; 
-	*y=temp;
-}
-	
-void clear_screen(){
-	for (int x = 0; x< 320; x++){
-		for (int y = 0; y < 240; y++){
-			plot_pixel(x, y, BLACK);
-			
-		}
-	}
-	
-}
+  int mstatus_value, mtvec_value, mie_value;
 
-void draw_cap(int x0, int x1, int y){
-	int cap_size = (1.0/3.0) * (x1 - x0);
-	draw_line(x0, y, x0 + cap_size, y, YELLOW);
-	draw_line(x0 + 2 * cap_size, y, x1, y, YELLOW);
-	draw_line(x0 + cap_size, y - cap_size, x0 + cap_size, y + cap_size, YELLOW);
-	draw_line(x0 + 2 * cap_size, y - cap_size, x0 + 2 * cap_size, y + cap_size, YELLOW);
-}	
+  // disable global interrupts
+  mstatus_value = 0b1000;
+  __asm__ volatile("csrc mstatus, %0" ::"r"(mstatus_value));
 
-void draw_res(int x0, int x1, int y){
-	int res_size = abs((x1 - x0)/3);
-	int last_pos_x;
-	draw_line (x0  - res_size/2, y, x0 - res_size, y, YELLOW);
-	draw_line(x0 - res_size/2, y, x0, y - res_size, YELLOW);
-	for (int i = 0; i < 6; i = i + 2){
-		draw_line(x0 + (i + 2) * res_size, y - res_size, x0 + (i + 1) * res_size, y + res_size, YELLOW);
-		draw_line(x0 + i * res_size, y - res_size, x0 + (i + 1) * res_size, y + res_size, YELLOW);
-		last_pos_x = x0 + (i + 2) * res_size;
-	}
-	draw_line(last_pos_x, y - res_size, last_pos_x + res_size/2, y, YELLOW);
-	draw_line(last_pos_x + res_size/2, y, last_pos_x + res_size, y, YELLOW);
+  // set interrupt handler address
+  mtvec_value = (int)&handler;
+  __asm__ volatile("csrw mtvec, %0" ::"r"(mtvec_value));
 
-}
+  // disable current interrupts
+  __asm__ volatile("csrr %0, mie" : "=r"(mie_value));
+  __asm__ volatile("csrc mie, %0" ::"r"(mie_value));
 
-void draw_ground(int x0, int x1, int y){
-	int ground_size = (x1 - x0)/6;
-	draw_line(x0, y, x0 + 6 * ground_size, y, YELLOW);
-	draw_line(x0 + ground_size, y - ground_size, x0 + 5 * ground_size, y - ground_size, YELLOW);
-	draw_line(x0 + 2 * ground_size, y - 2 * ground_size, x0 + 4 * ground_size, y - 2 * ground_size, YELLOW);
-	
-}
+  // enable key and timers
+  mie_value = 0x50088;
+  __asm__ volatile("csrs mie, %0" ::"r"(mie_value));
 
-void draw_power(int x0, int y0, int r){
-	draw_circle(x0, y0, r, BLUE);
-	draw_line(x0 - r/2, y0 - r/2, x0, y0 + r/2, BLUE);
-	draw_line(x0, y0 + r/2, x0 + r/2, y0 - r/2, BLUE);
-		//top line
-	draw_line(x0, y0 - 2 * r, x0, y0 - r, BLUE);
-	
-	//bottom line
-	draw_line(x0, y0 + 2 * r, x0, y0 + r, BLUE);
-	
-	
-	
-}
+  // reenable global interrupts
+  __asm__ volatile("csrs mstatus, %0" ::"r"(mstatus_value));
 
-void draw_current (int x0, int y0, int r){
-	draw_circle(x0, y0, r, BLUE);
-	draw_line(x0, y0+r/2, x0, y0-r/2, BLUE);
-	draw_line(x0 - r/2, y0, x0, y0 - r/2, BLUE);
-	draw_line(x0, y0 - r/2, x0 + r/2, y0, BLUE);
-	//top line
-	draw_line(x0, y0 - 2 * r, x0, y0 - r, BLUE);
-	
-	//bottom line
-	draw_line(x0, y0 + 2 * r, x0, y0 + r, BLUE);
-	
-}
+  // enables machine timer software interrupt
+  *(mtime_ptr + 4) = 1;
 
-void draw_inductor(int x0, int x1, int y){
-	draw_line(x0 - 50, y - 20, x0 - 20, y - 20, BLUE);
-	for (int i = 0; i < 4; i++){
-		draw_half_circle(x0 + i * 40, y, 30, BLUE);
-	}
-	draw_line(x0 + 140, y - 20, x0 + 170, y - 20, BLUE);
-		
-}
-void draw_circle(int xc, int yc, int r, short int line_colour)
-{
-    int x = 0;
-    int y = r;
-    int p = 1 - r;   // Decision parameter
+  *HEX3_HEX0_ptr = 0x3f;
 
-    while (x <= y)
-    {
-        // Plot the 8 symmetric points
+  // 1. Initialize Hardware Pointers
+  volatile int* pixel_ctrl_ptr = (int*)0xFF203020;
+  pixel_buffer_start = *pixel_ctrl_ptr;
+  volatile int* PS2_ptr = (int*)0xFF200100;
 
-        plot_pixel(xc + x, yc + y, line_colour);
-        plot_pixel(xc - x, yc + y, line_colour);
-        plot_pixel(xc + x, yc - y, line_colour);
-        plot_pixel(xc - x, yc - y, line_colour);
+  // 2. Define Circuit Components
+  Power V1 = {60, 120, 20, 10.0};
+  Resistor R1 = {10, 100, 120, 80};
+  Resistor R2 = {10, 160, 180, 80};
+  Ground GND = {220, 200, 50};
 
-        plot_pixel(xc + y, yc + x, line_colour);
-        plot_pixel(xc - y, yc + x, line_colour);
-        plot_pixel(xc + y, yc - x, line_colour);
-        plot_pixel(xc - y, yc - x, line_colour);
+  int breakcode = 0;
+  unsigned char byte = 0;
+  int PS2_data, RVALID;
 
-        x++;
+  // Optional: Start with a blank screen
+  clear_screen();
 
-        if (p < 0)
-        {
-            // Midpoint is inside circle
-            p = p + 2 * x + 1;
+  while (1) {
+    char buffer1[50];
+    char buffer2[50];
+    char buffer3[50];
+    int voltage = voltage_div_values[0];
+    int res1 = voltage_div_values[1];
+    int res2 = voltage_div_values[2];
+
+    sprintf(buffer1, "%d V", voltage);
+    sprintf(buffer2, "%d ohms", res1);
+    sprintf(buffer3, "%d ohms", res2);
+
+    char* voltagestr = buffer1;
+    char* res1str = buffer2;
+    char* res2str = buffer3;
+    // interrupts
+    *LEDR_ptr = counter;
+    *HEX3_HEX0_ptr = bit_codes[voltage_div_values[voltage_div_array]];
+    video_text(5, 30, buffer1);
+    video_text(26, 22, buffer2);
+    video_text(45, 22, buffer3);
+
+    // interrupts
+    PS2_data = *(PS2_ptr);         // Read PS/2 Data register
+    RVALID = (PS2_data & 0x8000);  // Extract RVALID field
+
+    if (RVALID != 0) {
+      byte = PS2_data & 0xFF;  // Get the scan code
+
+      if (byte == 0xF0) {
+        breakcode = 1;  // Found break code prefix
+      } else {
+        if (breakcode) {
+          // Logic triggers on key RELEASE
+          switch (byte) {
+            case 0x23:  // 'D' key scan code
+              clear_screen();
+              clear_text(buffer1, buffer2, buffer3);
+              video_text(10, 5, "Voltage Divider");
+              voltage_divider_cct(&V1, &R1, &R2, &GND);
+              break;
+          }
+          breakcode = 0;  // Reset breakcode flag
         }
-        else
-        {
-            // Midpoint is outside/on circle
-            y--;
-            p = p + 2 * x + 1 - 2 * y;
-        }
+      }
     }
+  }
+  return 0;
 }
 
-void draw_one(int x0, int y0, int y1){
-	int one_length = (y1 - y0)/3;
-	draw_line(x0, y0, x0, y1, YELLOW);
-	draw_line(x0 - one_length, y0 + one_length, x0, y0, YELLOW);
-	draw_line(x0 - one_length, y1, x0 + one_length, y1, YELLOW);
-	
-	
+// plots the colour of a pixel at point (x, y)
+void plot_pixel(int x, int y, short int line_color) {
+  volatile short int* one_pixel_address;
+  one_pixel_address = pixel_buffer_start + (y << 10) + (x << 1);
+
+  *one_pixel_address = line_color;
 }
 
-void draw_two(int xc, int yc, int r){
-	draw_half_circle(xc, yc, r, YELLOW);
-	draw_line(xc + r - 5, yc - 13, xc - r, yc +r, YELLOW);
-	draw_line(xc - r, yc + r, xc + r, yc +r, YELLOW);
-	
-	
+// draws line from (x0, y0) to (x1, y1) with colour color
+void draw_line(int x0, int y0, int x1, int y1, short int color) {
+  int y_step;
+
+  bool is_steep = abs(y1 - y0) > abs(x1 - x0);
+  if (is_steep) {
+    swapnumber(&x0, &y0);
+    swapnumber(&x1, &y1);
+  }
+  if (x0 > x1) {
+    swapnumber(&x0, &x1);
+    swapnumber(&y0, &y1);
+  }
+  int deltax = x1 - x0;
+  int deltay = abs(y1 - y0);
+  int error = -(deltax / 2);
+  int y = y0;
+  if (y0 < y1) {
+    y_step = 1;
+  } else {
+    y_step = -1;
+  }
+
+  for (int x = x0; x <= x1; x++) {
+    if (is_steep) {
+      plot_pixel(y, x, color);
+    } else {
+      plot_pixel(x, y, color);
+    }
+    error = error + deltay;
+    if (error >= 0) {
+      y = y + y_step;
+      error = error - deltax;
+    }
+  }
 }
 
-void draw_three(
-void draw_half_circle(int xc, int yc, int r, short int line_colour){
-    int x = 0;
-    int y = r;
-    int p = 1 - r;   // Decision parameter
-
-    while (x <= y)
-    {
-        // Plot the 8 symmetric points
-
-
-        plot_pixel(xc + x, yc - y, line_colour);
-        plot_pixel(xc - x, yc - y, line_colour);
-
-        x++;
-
-        if (p < 0)
-        {
-            // Midpoint is inside circle
-            p = p + 2 * x + 1;
-        }
-        else
-        {
-            // Midpoint is outside/on circle
-            y--;
-            p = p + 2 * x + 1 - 2 * y;
-        }
-    }	
-	
+// swaps two numbers for Bresenham’s algorithm
+void swapnumber(int* x, int* y) {
+  int temp = *x;
+  *x = *y;
+  *y = temp;
 }
 
+void clear_screen() {
+  for (int x = 0; x < 320; x++) {
+    for (int y = 0; y < 240; y++) {
+      plot_pixel(x, y, BLACK);
+    }
+  }
+}
 
+void draw_cap(int x0, int x1, int y) {
+  int cap_size = (1.0 / 3.0) * (x1 - x0);
+  draw_line(x0, y, x0 + cap_size, y, YELLOW);
+  draw_line(x0 + 2 * cap_size, y, x1, y, YELLOW);
+  draw_line(x0 + cap_size, y - cap_size, x0 + cap_size, y + cap_size, YELLOW);
+  draw_line(x0 + 2 * cap_size, y - cap_size, x0 + 2 * cap_size, y + cap_size,
+            YELLOW);
+}
 
+void draw_res(int x0, int x1, int y) {
+  int res_size = abs((x1 - x0) / 3);
+  int last_pos_x;
+  draw_line(x0 - res_size / 2, y, x0 - res_size, y, YELLOW);
+  draw_line(x0 - res_size / 2, y, x0, y - res_size, YELLOW);
+  for (int i = 0; i < 6; i = i + 2) {
+    draw_line(x0 + (i + 2) * res_size, y - res_size, x0 + (i + 1) * res_size,
+              y + res_size, YELLOW);
+    draw_line(x0 + i * res_size, y - res_size, x0 + (i + 1) * res_size,
+              y + res_size, YELLOW);
+    last_pos_x = x0 + (i + 2) * res_size;
+  }
+  draw_line(last_pos_x, y - res_size, last_pos_x + res_size / 2, y, YELLOW);
+  draw_line(last_pos_x + res_size / 2, y, last_pos_x + res_size, y, YELLOW);
+}
 
-	
+void draw_ground(int x0, int x1, int y) {
+  int ground_size = (x1 - x0) / 6;
+  draw_line(x0, y, x0 + 6 * ground_size, y, YELLOW);
+  draw_line(x0 + ground_size, y - ground_size, x0 + 5 * ground_size,
+            y - ground_size, YELLOW);
+  draw_line(x0 + 2 * ground_size, y - 2 * ground_size, x0 + 4 * ground_size,
+            y - 2 * ground_size, YELLOW);
+}
 
-	
+void draw_power(int x0, int y0, int r) {
+  draw_circle(x0, y0, r, BLUE);
+  draw_line(x0 - r / 2, y0 - r / 2, x0, y0 + r / 2, BLUE);
+  draw_line(x0, y0 + r / 2, x0 + r / 2, y0 - r / 2, BLUE);
+  // top line
+  draw_line(x0, y0 - 2 * r, x0, y0 - r, BLUE);
+
+  // bottom line
+  draw_line(x0, y0 + 2 * r, x0, y0 + r, BLUE);
+}
+
+void draw_current(int x0, int y0, int r) {
+  draw_circle(x0, y0, r, BLUE);
+  draw_line(x0, y0 + r / 2, x0, y0 - r / 2, BLUE);
+  draw_line(x0 - r / 2, y0, x0, y0 - r / 2, BLUE);
+  draw_line(x0, y0 - r / 2, x0 + r / 2, y0, BLUE);
+  // top line
+  draw_line(x0, y0 - 2 * r, x0, y0 - r, BLUE);
+
+  // bottom line
+  draw_line(x0, y0 + 2 * r, x0, y0 + r, BLUE);
+}
+
+void draw_inductor(int x0, int x1, int y) {
+  draw_line(x0 - 50, y - 20, x0 - 20, y - 20, BLUE);
+  for (int i = 0; i < 4; i++) {
+    draw_half_circle(x0 + i * 40, y, 30, BLUE);
+  }
+  draw_line(x0 + 140, y - 20, x0 + 170, y - 20, BLUE);
+}
+void draw_circle(int xc, int yc, int r, short int line_colour) {
+  int x = 0;
+  int y = r;
+  int p = 1 - r;  // Decision parameter
+
+  while (x <= y) {
+    // Plot the 8 symmetric points
+
+    plot_pixel(xc + x, yc + y, line_colour);
+    plot_pixel(xc - x, yc + y, line_colour);
+    plot_pixel(xc + x, yc - y, line_colour);
+    plot_pixel(xc - x, yc - y, line_colour);
+
+    plot_pixel(xc + y, yc + x, line_colour);
+    plot_pixel(xc - y, yc + x, line_colour);
+    plot_pixel(xc + y, yc - x, line_colour);
+    plot_pixel(xc - y, yc - x, line_colour);
+
+    x++;
+
+    if (p < 0) {
+      // Midpoint is inside circle
+      p = p + 2 * x + 1;
+    } else {
+      // Midpoint is outside/on circle
+      y--;
+      p = p + 2 * x + 1 - 2 * y;
+    }
+  }
+}
+
+void draw_half_circle(int xc, int yc, int r, short int line_colour) {
+  int x = 0;
+  int y = r;
+  int p = 1 - r;  // Decision parameter
+
+  while (x <= y) {
+    // Plot the 8 symmetric points
+
+    plot_pixel(xc + x, yc - y, line_colour);
+    plot_pixel(xc - x, yc - y, line_colour);
+
+    x++;
+
+    if (p < 0) {
+      // Midpoint is inside circle
+      p = p + 2 * x + 1;
+    } else {
+      // Midpoint is outside/on circle
+      y--;
+      p = p + 2 * x + 1 - 2 * y;
+    }
+  }
+}
