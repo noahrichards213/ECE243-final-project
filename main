@@ -213,6 +213,26 @@ void current_divider_cct(Component* I1, Component* R3, Component* R4,
   draw_line(R4->x_end + (R4->x_end - R4->x_start), R4->y_start,
             R4->x_end + (R4->x_end - R4->x_start), G->y_start, YELLOW);
 }
+void RC_circuit(Component* V, Component* R5, Component* C1, Component* G) {
+  draw_power(V->x_start, V->y_start, V->radius);
+
+  // Draw capacitor first
+  draw_cap(C1->x_start, C1->x_end, C1->y_start);
+
+  // Draw resistor second
+  draw_res(R5->x_start, R5->x_end, R5->y_start);
+
+  draw_ground(G->x_start, G->x_end, G->y_start);
+
+  draw_line(V->x_start, G->y_start, C1->x_end, G->y_start, YELLOW);
+
+  draw_line(V->x_start, R5->y_start, R5->x_start, R5->y_start, YELLOW);
+
+  draw_line(C1->x_end, C1->y_end, C1->x_end, G->y_start, YELLOW);
+
+  draw_line(R5->x_end + (R5->x_end - R5->x_start), C1->y_start, C1->x_start,
+            C1->y_start, BLUE);
+};
 
 void video_text(int x, int y, char* text_ptr) {
   int offset;
@@ -283,16 +303,20 @@ int main(void) {
   // Define circuit components to be used in an array
 
   // voltage divider comoponents
-  Component V1 = {10.0, 60, -1, 120, -1, 20, 'V'};
   Component R1 = {10.0, 100, 120, 80, 80, -1, 'R'};
   Component R2 = {15.0, 150, 170, 80, 80, -1, 'R'};
 
   // current divider components
-  Component I1 = {10.0, 60, -1, 120, -1, 20, 'I'};
   Component R3 = {10.0, 100, 120, 80, 80, -1, 'R'};
   Component R4 = {15.0, 100, 120, 30, 30, -1, 'R'};
 
-  // ground is same everywhere
+  // RC circuit components
+  Component R5 = {10.0, 100, 120, 80, 80, -1, 'R'};
+  Component C1 = {10, 150, 170, 80, 80, -1, 'C'};
+
+  // same everywhere
+  Component V1 = {10.0, 60, -1, 120, -1, 20, 'V'};
+  Component I1 = {10.0, 60, -1, 120, -1, 20, 'I'};
   Component GND = {-1, 140, 120, 160, 160, -1, 'G'};
 
   int breakcode = 0;
@@ -323,7 +347,7 @@ int main(void) {
       video_text(10, 5, "Voltage Divider");
       video_text(5, 30, buffer1);
       video_text(26, 22, buffer2);
-      video_text(45, 22, buffer3);
+      video_text(36, 22, buffer3);
       video_text(34, 14, buffer4);
       video_text(36, 17, buffer5);
 
@@ -347,6 +371,20 @@ int main(void) {
       video_text(26, 10, buffer3);
       video_text(36, 8, buffer4);
       video_text(36, 17, buffer5);
+
+    } else if (mode == 3) {
+      int voltage = circuit_components[0].value;
+      int res5 = circuit_components[1].value;
+      int cap1 = circuit_components[2].value;
+
+      sprintf(buffer1, "%d V", voltage);
+      sprintf(buffer2, "%d ohms", res5);
+      sprintf(buffer3, "%d F", cap1);
+
+      video_text(10, 5, "RC circuit");
+      video_text(5, 30, buffer1);
+      video_text(26, 22, buffer2);
+      video_text(36, 22, buffer3);
     }
 
     // interrupts
@@ -392,7 +430,7 @@ int main(void) {
 
               video_text(5, 30, buffer1);
               video_text(26, 22, buffer2);
-              video_text(45, 22, buffer3);
+              video_text(36, 22, buffer3);
               video_text(34, 14, buffer4);
 
               circuit_components[0] = I1;
@@ -402,6 +440,26 @@ int main(void) {
               current_divider_cct(&I1, &R3, &R4, &GND);
 
               break;
+
+            case 0x2D:  // 'R' key scan code
+              mode = 3;
+              clear_screen();
+
+              clear_text(buffer1, buffer2, buffer3, buffer4, buffer5);
+
+              video_text(5, 30, buffer1);
+              video_text(26, 22, buffer2);
+              video_text(26, 10, buffer3);
+              video_text(36, 8, buffer4);
+              video_text(36, 17, buffer5);
+              video_text(34, 14, buffer4);
+              video_text(10, 5, buffer4);
+
+              circuit_components[0] = V1;
+              circuit_components[1] = R5;
+              circuit_components[2] = C1;
+
+              RC_circuit(&V1, &R5, &C1, &GND);
           }
 
           breakcode = 0;  // Reset breakcode flag
